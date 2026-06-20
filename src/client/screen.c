@@ -2187,6 +2187,8 @@ void SCR_UpdateScreen(void)
 
     R_EndFrame();
 
+    CL_BenchmarkFrameRendered();
+
     recursive--;
 }
 

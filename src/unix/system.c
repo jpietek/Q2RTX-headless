@@ -24,6 +24,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #if USE_REF
 #include "client/video.h"
 #endif
+#if USE_CLIENT
+#include "client/client.h"
+#endif
 #include "system/system.h"
 #include "tty.h"
 
@@ -319,11 +322,13 @@ void Sys_Error(const char *error, ...)
     va_end(argptr);
 
 #if USE_CLIENT
-    SDL_ShowSimpleMessageBox(
-		    SDL_MESSAGEBOX_ERROR,
-		    PRODUCT " Fatal Error",
-		    text,
-		    get_sdl_window());
+    if (!CL_BenchmarkHeadless()) {
+        SDL_ShowSimpleMessageBox(
+                SDL_MESSAGEBOX_ERROR,
+                PRODUCT " Fatal Error",
+                text,
+                get_sdl_window());
+    }
 #endif
 
 #if USE_REF
@@ -566,4 +571,3 @@ int main(int argc, char **argv)
     Com_Quit(NULL, ERR_DISCONNECT);
     return EXIT_FAILURE; // never gets here
 }
-

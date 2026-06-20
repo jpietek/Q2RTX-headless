@@ -76,6 +76,9 @@ void CL_SendStatusRequest(const netadr_t *address);
 demoInfo_t *CL_GetDemoInfo(const char *path, demoInfo_t *info);
 bool CL_CheatsOK(void);
 void CL_SetSky(void);
+void CL_BenchmarkMaybeStart(void);
+bool CL_BenchmarkHeadless(void);
+void CL_BenchmarkFatal(error_type_t code, const char *message);
 
 #if USE_CURL
 int HTTP_FetchFile(const char *url, void **data);

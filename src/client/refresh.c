@@ -249,26 +249,30 @@ void CL_RunRefresh(void)
         return;
     }
 
-    vid.pump_events();
+    if (CL_BenchmarkHeadless()) {
+        mode_changed = 0;
+    } else {
+        vid.pump_events();
 
-    if (mode_changed) {
-        if (mode_changed & MODE_FULLSCREEN) {
-            vid.set_mode();
-            if (vid_fullscreen->integer) {
-                Cvar_Set("_vid_fullscreen", vid_fullscreen->string);
-            }
-        } else {
-            if (vid_fullscreen->integer) {
-                if (mode_changed & MODE_MODELIST) {
-                    vid.set_mode();
+        if (mode_changed) {
+            if (mode_changed & MODE_FULLSCREEN) {
+                vid.set_mode();
+                if (vid_fullscreen->integer) {
+                    Cvar_Set("_vid_fullscreen", vid_fullscreen->string);
                 }
             } else {
-                if (mode_changed & MODE_GEOMETRY) {
-                    vid.set_mode();
+                if (vid_fullscreen->integer) {
+                    if (mode_changed & MODE_MODELIST) {
+                        vid.set_mode();
+                    }
+                } else {
+                    if (mode_changed & MODE_GEOMETRY) {
+                        vid.set_mode();
+                    }
                 }
             }
+            mode_changed = 0;
         }
-        mode_changed = 0;
     }
 
     if (cvar_modified & CVAR_REFRESH) {
@@ -392,11 +396,18 @@ void CL_InitRefresh(void)
     if (ref_type == REF_TYPE_NONE)
         Com_Error(ERR_FATAL, "Couldn't initialize refresh: %s", Com_GetLastError());
 
-    modelist = vid.get_mode_list();
-    vid_modelist = Cvar_Get("vid_modelist", modelist, 0);
-    Z_Free(modelist);
+    if (CL_BenchmarkHeadless()) {
+        char mode[MAX_QPATH];
 
-    vid.set_mode();
+        Q_snprintf(mode, sizeof(mode), "%dx%d", r_config.width, r_config.height);
+        vid_modelist = Cvar_Get("vid_modelist", mode, 0);
+    } else {
+        modelist = vid.get_mode_list();
+        vid_modelist = Cvar_Get("vid_modelist", modelist, 0);
+        Z_Free(modelist);
+
+        vid.set_mode();
+    }
 
     cls.ref_type = ref_type;
     cls.ref_initialized = true;
@@ -489,6 +500,7 @@ void(*R_UpdateRawPic)(int pic_w, int pic_h, const uint32_t *pic) = NULL;
 void(*R_DiscardRawPic)(void) = NULL;
 void(*R_BeginFrame)(void) = NULL;
 void(*R_EndFrame)(void) = NULL;
+void(*R_BenchmarkWaitIdle)(void) = NULL;
 void(*R_ModeChanged)(int width, int height, int flags) = NULL;
 void(*R_AddDecal)(decal_t *d) = NULL;
 bool(*R_InterceptKey)(unsigned key, bool down) = NULL;

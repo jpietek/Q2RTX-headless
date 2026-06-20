@@ -22,6 +22,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "client.h"
 
+#include <limits.h>
+
 static byte     demo_buffer[MAX_MSGLEN];
 
 static cvar_t   *cl_demosnaps;
@@ -671,6 +673,27 @@ static int parse_next_message(int wait)
     int ret;
 
     ret = read_next_message(cls.demo.playback);
+    if (ret == 0 && CL_BenchmarkActive()) {
+        if (cls.demo.time_frames) {
+            unsigned msec = Sys_Milliseconds();
+
+            if (msec > cls.demo.time_start) {
+                CL_BenchmarkDemoDone(cls.demo.time_frames, msec - cls.demo.time_start);
+            }
+        }
+
+        if (CL_BenchmarkFinished()) {
+            return -1;
+        }
+
+        if (CL_BenchmarkHoldAfterDemo()) {
+            update_status();
+            cls.demo.eof = true;
+            CL_BenchmarkDemoHoldStart();
+            return -1;
+        }
+    }
+
     if (ret < 0 || (ret == 0 && wait == 0)) {
         finish_demo(ret);
         return -1;
@@ -907,7 +930,16 @@ void CL_FirstDemoFrame(void)
     }
 
     // begin timedemo
-    if (com_timedemo->integer) {
+    if (CL_BenchmarkActive()) {
+        if (cls.timedemo.runs_total == 0) {
+            cls.timedemo.runs_total = INT_MAX;
+            cls.timedemo.run_current = 0;
+        }
+
+        cls.demo.time_frames = 0;
+        cls.demo.time_start = Sys_Milliseconds();
+        CL_BenchmarkDemoFirstFrame();
+    } else if (com_timedemo->integer) {
         if(cls.timedemo.runs_total == 0) {
             cls.timedemo.runs_total = com_timedemo->integer;
             cls.timedemo.run_current = 0;
@@ -1253,7 +1285,13 @@ void CL_CleanupDemos(void)
     if (cls.demo.playback) {
         FS_CloseFile(cls.demo.playback);
 
-        if (com_timedemo->integer && cls.demo.time_frames) {
+        if (CL_BenchmarkActive() && cls.demo.time_frames) {
+            unsigned msec = Sys_Milliseconds();
+
+            if (msec > cls.demo.time_start) {
+                CL_BenchmarkDemoDone(cls.demo.time_frames, msec - cls.demo.time_start);
+            }
+        } else if (com_timedemo->integer && cls.demo.time_frames) {
             unsigned msec = Sys_Milliseconds();
 
             if (msec > cls.demo.time_start) {
@@ -1302,6 +1340,10 @@ void CL_DemoFrame(int msec)
     }
 
     if (com_timedemo->integer) {
+        if (CL_BenchmarkActive() && cls.demo.eof) {
+            cl.time = cl.servertime;
+            return;
+        }
         parse_next_message(0);
         cl.time = cl.servertime;
         cls.demo.time_frames++;
@@ -1350,5 +1392,3 @@ void CL_InitDemos(void)
 
     Cmd_Register(c_demo);
 }
-
-

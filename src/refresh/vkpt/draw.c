@@ -207,8 +207,8 @@ create_render_pass(void)
 		.storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
 		.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR,
 		.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
-		.initialLayout  = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-		.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		.initialLayout  = qvk.swap_chain_image_layout,
+		.finalLayout    = qvk.swap_chain_image_layout,
 	};
 
 	VkAttachmentReference color_attachment_ref = {

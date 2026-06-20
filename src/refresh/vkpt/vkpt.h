@@ -189,6 +189,8 @@ typedef struct QVK_s {
 	bool                        surf_is_hdr;
 	bool                        surf_vsync;
 	VkPresentModeKHR            present_mode;
+	bool                        swap_chain_offscreen;
+	VkImageLayout               swap_chain_image_layout;
 	VkExtent2D                  extent_screen_images;
 	VkExtent2D                  extent_render;
 	VkExtent2D                  extent_render_prev;
@@ -200,6 +202,7 @@ typedef struct QVK_s {
 	uint32_t                    num_swap_chain_images;
 	VkImage*                    swap_chain_images;
 	VkImageView*                swap_chain_image_views;
+	VkDeviceMemory*             swap_chain_image_memory;
 	
 	bool                        use_ray_query;
 	bool                        enable_validation;
@@ -895,4 +898,3 @@ VkResult vkpt_debugdraw_destroy(void);
 VkResult vkpt_debugdraw_destroy_pipelines(void);
 
 #endif  /*__VKPT_H__*/
-

@@ -8,6 +8,7 @@ q2rtxded
 game*.so
 *.swp
 build*/
+dist/
 shader_vkpt
 *.exe
 *.ilk

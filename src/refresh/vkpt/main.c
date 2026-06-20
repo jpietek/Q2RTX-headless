@@ -427,11 +427,14 @@ const char *vk_requested_instance_extensions[] = {
 };
 
 const char *vk_requested_device_extensions_common[] = {
-	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 #ifdef VKPT_DEVICE_GROUPS
 	VK_KHR_DEVICE_GROUP_EXTENSION_NAME,
 	VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
 #endif
+};
+
+const char *vk_requested_device_extensions_surface[] = {
+	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
 const char *vk_requested_device_extensions_ray_pipeline[] = {
@@ -622,10 +625,157 @@ static bool pick_surface_format_sdr(picked_surface_format_t* picked_fmt, const V
 	return false;
 }
 
+static VkResult
+create_swapchain_image_view(uint32_t image_index, VkFormat view_format)
+{
+	VkImageViewCreateInfo img_create_info = {
+		.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image      = qvk.swap_chain_images[image_index],
+		.viewType   = VK_IMAGE_VIEW_TYPE_2D,
+		.format     = view_format,
+		.components = {
+			VK_COMPONENT_SWIZZLE_R,
+			VK_COMPONENT_SWIZZLE_G,
+			VK_COMPONENT_SWIZZLE_B,
+			VK_COMPONENT_SWIZZLE_A
+		},
+		.subresourceRange = {
+			.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel   = 0,
+			.levelCount     = 1,
+			.baseArrayLayer = 0,
+			.layerCount     = 1
+		}
+	};
+
+	return vkCreateImageView(qvk.device, &img_create_info, NULL, qvk.swap_chain_image_views + image_index);
+}
+
+static VkResult
+transition_swapchain_images(VkImageLayout old_layout, VkImageLayout new_layout)
+{
+	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
+
+	for (int image_index = 0; image_index < qvk.num_swap_chain_images; image_index++)
+	{
+		IMAGE_BARRIER(cmd_buf,
+			.image = qvk.swap_chain_images[image_index],
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1
+			},
+			.srcAccessMask = 0,
+			.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			.oldLayout = old_layout,
+			.newLayout = new_layout,
+		);
+	}
+
+	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
+	vkpt_wait_idle(qvk.queue_graphics, &qvk.cmd_buffers_graphics);
+
+	return VK_SUCCESS;
+}
+
+static VkResult
+create_offscreen_swapchain(void)
+{
+	num_accumulated_frames = 0;
+
+	qvk.swap_chain_offscreen = true;
+	qvk.swap_chain = VK_NULL_HANDLE;
+	qvk.swap_chain_image_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	qvk.surf_format = (VkSurfaceFormatKHR) {
+		.format = VK_FORMAT_B8G8R8A8_SRGB,
+		.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+	};
+	qvk.surf_is_hdr = false;
+	qvk.surf_vsync = false;
+	qvk.present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+
+	qvk.draw_width = max(1, r_config.width);
+	qvk.draw_height = max(1, r_config.height);
+	qvk.extent_unscaled = (VkExtent2D) {
+		.width = qvk.draw_width,
+		.height = qvk.draw_height
+	};
+
+	qvk.num_swap_chain_images = MAX_FRAMES_IN_FLIGHT;
+	qvk.swap_chain_images = calloc(qvk.num_swap_chain_images, sizeof(*qvk.swap_chain_images));
+	qvk.swap_chain_image_views = calloc(qvk.num_swap_chain_images, sizeof(*qvk.swap_chain_image_views));
+	qvk.swap_chain_image_memory = calloc(qvk.num_swap_chain_images, sizeof(*qvk.swap_chain_image_memory));
+	if (!qvk.swap_chain_images || !qvk.swap_chain_image_views || !qvk.swap_chain_image_memory) {
+		Com_EPrintf("error allocating offscreen benchmark images\n");
+		return VK_ERROR_OUT_OF_HOST_MEMORY;
+	}
+
+	for (uint32_t i = 0; i < qvk.num_swap_chain_images; i++) {
+		VkImageCreateInfo image_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType = VK_IMAGE_TYPE_2D,
+			.format = qvk.surf_format.format,
+			.extent = {
+				.width = qvk.extent_unscaled.width,
+				.height = qvk.extent_unscaled.height,
+				.depth = 1
+			},
+			.mipLevels = 1,
+			.arrayLayers = 1,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+			       | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+			       | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		VkResult result = vkCreateImage(qvk.device, &image_info, NULL, qvk.swap_chain_images + i);
+		if (result != VK_SUCCESS) {
+			Com_EPrintf("error creating offscreen benchmark image: %s\n", qvk_result_to_string(result));
+			return result;
+		}
+
+		VkMemoryRequirements mem_req;
+		vkGetImageMemoryRequirements(qvk.device, qvk.swap_chain_images[i], &mem_req);
+		result = allocate_gpu_memory(mem_req, qvk.swap_chain_image_memory + i);
+		if (result != VK_SUCCESS) {
+			Com_EPrintf("error allocating offscreen benchmark image memory: %s\n", qvk_result_to_string(result));
+			return result;
+		}
+
+		result = vkBindImageMemory(qvk.device, qvk.swap_chain_images[i], qvk.swap_chain_image_memory[i], 0);
+		if (result != VK_SUCCESS) {
+			Com_EPrintf("error binding offscreen benchmark image memory: %s\n", qvk_result_to_string(result));
+			return result;
+		}
+
+		result = create_swapchain_image_view(i, qvk.surf_format.format);
+		if (result != VK_SUCCESS) {
+			Com_EPrintf("error creating offscreen benchmark image view: %s\n", qvk_result_to_string(result));
+			return result;
+		}
+	}
+
+	Com_Printf("Using Vulkan offscreen benchmark target at %ux%u.\n",
+		qvk.extent_unscaled.width, qvk.extent_unscaled.height);
+
+	return transition_swapchain_images(VK_IMAGE_LAYOUT_UNDEFINED, qvk.swap_chain_image_layout);
+}
+
 VkResult
 create_swapchain(void)
 {
 	num_accumulated_frames = 0;
+
+	if (CL_BenchmarkHeadless())
+		return create_offscreen_swapchain();
+
+	qvk.swap_chain_offscreen = false;
+	qvk.swap_chain_image_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
 	/* create swapchain (query details and ignore them afterwards :-) )*/
 	VkSurfaceCapabilitiesKHR surf_capabilities;
@@ -739,29 +889,7 @@ create_swapchain(void)
 
 	qvk.swap_chain_image_views = malloc(qvk.num_swap_chain_images * sizeof(*qvk.swap_chain_image_views));
 	for(int i = 0; i < qvk.num_swap_chain_images; i++) {
-		VkImageViewCreateInfo img_create_info = {
-			.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-			.image      = qvk.swap_chain_images[i],
-			.viewType   = VK_IMAGE_VIEW_TYPE_2D,
-			.format     = picked_format.swapchain_view_fmt,
-#if 1
-			.components = {
-				VK_COMPONENT_SWIZZLE_R,
-				VK_COMPONENT_SWIZZLE_G,
-				VK_COMPONENT_SWIZZLE_B,
-				VK_COMPONENT_SWIZZLE_A
-			},
-#endif
-			.subresourceRange = {
-				.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-				.baseMipLevel   = 0,
-				.levelCount     = 1,
-				.baseArrayLayer = 0,
-				.layerCount     = 1
-			}
-		};
-
-		if(vkCreateImageView(qvk.device, &img_create_info, NULL, qvk.swap_chain_image_views + i) != VK_SUCCESS) {
+		if(create_swapchain_image_view(i, picked_format.swapchain_view_fmt) != VK_SUCCESS) {
 			Com_EPrintf("error creating image view!");
 
 			free(qvk.swap_chain_image_views);
@@ -775,30 +903,7 @@ create_swapchain(void)
 		}
 	}
 
-	VkCommandBuffer cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
-
-	for (int image_index = 0; image_index < qvk.num_swap_chain_images; image_index++)
-	{
-		IMAGE_BARRIER(cmd_buf,
-			.image = qvk.swap_chain_images[image_index],
-			.subresourceRange = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.baseMipLevel = 0,
-				.levelCount = 1,
-				.baseArrayLayer = 0,
-				.layerCount = 1
-			},
-			.srcAccessMask = 0,
-			.dstAccessMask = 0,
-			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-		);
-	}
-
-	vkpt_submit_command_buffer_simple(cmd_buf, qvk.queue_graphics, true);
-	vkpt_wait_idle(qvk.queue_graphics, &qvk.cmd_buffers_graphics);
-
-	return VK_SUCCESS;
+	return transition_swapchain_images(VK_IMAGE_LAYOUT_UNDEFINED, qvk.swap_chain_image_layout);
 }
 
 VkResult
@@ -864,6 +969,8 @@ append_string_list(const char** dst, uint32_t* dst_count, uint32_t dst_capacity,
 bool
 init_vulkan(void)
 {
+	bool headless = CL_BenchmarkHeadless();
+
 	Com_Printf("----- init_vulkan -----\n");
 
 	/* layers */
@@ -875,27 +982,35 @@ init_vulkan(void)
 	
 	/* instance extensions */
 
-	if (!SDL_Vulkan_GetInstanceExtensions(qvk.window, &qvk.num_sdl2_extensions, NULL)) {
-		Com_EPrintf("Couldn't get SDL2 Vulkan extension count\n");
-		return false;
-	}
+	if (headless) {
+		qvk.num_sdl2_extensions = 0;
+		qvk.sdl2_extensions = NULL;
+		Com_Printf("Vulkan benchmark headless mode does not require window-system instance extensions.\n");
+	} else {
+		if (!SDL_Vulkan_GetInstanceExtensions(qvk.window, &qvk.num_sdl2_extensions, NULL)) {
+			Com_EPrintf("Couldn't get SDL2 Vulkan extension count\n");
+			return false;
+		}
 
-	qvk.sdl2_extensions = malloc(sizeof(char*) * qvk.num_sdl2_extensions);
-	if (!SDL_Vulkan_GetInstanceExtensions(qvk.window, &qvk.num_sdl2_extensions, qvk.sdl2_extensions)) {
-		Com_EPrintf("Couldn't get SDL2 Vulkan extensions\n");
-		return false;
-	}
+		qvk.sdl2_extensions = malloc(sizeof(char*) * qvk.num_sdl2_extensions);
+		if (!SDL_Vulkan_GetInstanceExtensions(qvk.window, &qvk.num_sdl2_extensions, qvk.sdl2_extensions)) {
+			Com_EPrintf("Couldn't get SDL2 Vulkan extensions\n");
+			return false;
+		}
 
-	Com_Printf("Vulkan instance extensions required by SDL2: \n");
-	for (int i = 0; i < qvk.num_sdl2_extensions; i++) {
-		Com_Printf("  %s\n", qvk.sdl2_extensions[i]);
+		Com_Printf("Vulkan instance extensions required by SDL2: \n");
+		for (int i = 0; i < qvk.num_sdl2_extensions; i++) {
+			Com_Printf("  %s\n", qvk.sdl2_extensions[i]);
+		}
 	}
 
 	int num_inst_ext_max = qvk.num_sdl2_extensions + LENGTH(vk_requested_instance_extensions) + NUM_OPTIONAL_INSTANCE_EXTENSIONS;
 	const char **ext = alloca(sizeof(const char *) * num_inst_ext_max);
 	int num_inst_ext_combined = 0;
-	memcpy(ext + num_inst_ext_combined, qvk.sdl2_extensions, qvk.num_sdl2_extensions * sizeof(*qvk.sdl2_extensions));
-	num_inst_ext_combined += qvk.num_sdl2_extensions;
+	if (!headless) {
+		memcpy(ext + num_inst_ext_combined, qvk.sdl2_extensions, qvk.num_sdl2_extensions * sizeof(*qvk.sdl2_extensions));
+		num_inst_ext_combined += qvk.num_sdl2_extensions;
+	}
 	memcpy(ext + num_inst_ext_combined, vk_requested_instance_extensions, sizeof(vk_requested_instance_extensions));
 	num_inst_ext_combined += LENGTH(vk_requested_instance_extensions);
 
@@ -912,13 +1027,15 @@ init_vulkan(void)
 				break;
 			}
 		}
-		for(int j = 0; j < NUM_OPTIONAL_INSTANCE_EXTENSIONS; j++) {
-			const char *ext_name = optional_instance_extension_name[j];
-			if(!strcmp(qvk.extensions[i].extensionName, ext_name)) {
-				requested = 1;
-				ext[num_inst_ext_combined++] = ext_name;
-				available_optional_instance_extensions[j] = true;
-				break;
+		if (!headless) {
+			for(int j = 0; j < NUM_OPTIONAL_INSTANCE_EXTENSIONS; j++) {
+				const char *ext_name = optional_instance_extension_name[j];
+				if(!strcmp(qvk.extensions[i].extensionName, ext_name)) {
+					requested = 1;
+					ext[num_inst_ext_combined++] = ext_name;
+					available_optional_instance_extensions[j] = true;
+					break;
+				}
 			}
 		}
 		Com_Printf("  %s%s\n", qvk.extensions[i].extensionName, requested ? " (requested)" : "");
@@ -986,9 +1103,13 @@ init_vulkan(void)
 	_VK(qvkCreateDebugUtilsMessengerEXT(qvk.instance, &dbg_create_info, NULL, &qvk.dbg_messenger));
 
 	/* create surface */
-	if(!SDL_Vulkan_CreateSurface(qvk.window, qvk.instance, &qvk.surface)) {
-		Com_EPrintf("SDL2 could not create a surface!\n");
-		return false;
+	if (headless) {
+		qvk.surface = VK_NULL_HANDLE;
+	} else {
+		if(!SDL_Vulkan_CreateSurface(qvk.window, qvk.instance, &qvk.surface)) {
+			Com_EPrintf("SDL2 could not create a surface!\n");
+			return false;
+		}
 	}
 
 	/* pick physical device (iterate over all but pick device 0 anyways) */
@@ -1273,15 +1394,16 @@ init_vulkan(void)
 	for(int i = 0; i < num_queue_families; i++) {
 		if(!queue_families[i].queueCount)
 			continue;
-		VkBool32 present_support = 0;
-		vkGetPhysicalDeviceSurfaceSupportKHR(qvk.physical_device, i, qvk.surface, &present_support);
+		VkBool32 present_support = VK_TRUE;
+		if (!headless)
+			vkGetPhysicalDeviceSurfaceSupportKHR(qvk.physical_device, i, qvk.surface, &present_support);
 
 		const int supports_graphics = queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT;
 		const int supports_compute = queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT;
 		const int supports_transfer = queue_families[i].queueFlags & VK_QUEUE_TRANSFER_BIT;
 
 		if(supports_graphics && supports_compute && qvk.queue_idx_graphics < 0) {
-			if(!present_support)
+			if(!headless && !present_support)
 				continue;
 			qvk.queue_idx_graphics = i;
 		}
@@ -1422,7 +1544,7 @@ init_vulkan(void)
 		.queueCreateInfoCount    = num_create_queues
 	};
 
-	uint32_t max_extension_count = LENGTH(vk_requested_device_extensions_common);
+	uint32_t max_extension_count = LENGTH(vk_requested_device_extensions_common) + LENGTH(vk_requested_device_extensions_surface);
 	max_extension_count += max(LENGTH(vk_requested_device_extensions_ray_pipeline), LENGTH(vk_requested_device_extensions_ray_query));
 	max_extension_count += NUM_OPTIONAL_DEVICE_EXTENSIONS;
 
@@ -1431,6 +1553,10 @@ init_vulkan(void)
 
 	append_string_list(device_extensions, &device_extension_count, max_extension_count, 
 		vk_requested_device_extensions_common, LENGTH(vk_requested_device_extensions_common));
+	if (!headless) {
+		append_string_list(device_extensions, &device_extension_count, max_extension_count,
+			vk_requested_device_extensions_surface, LENGTH(vk_requested_device_extensions_surface));
+	}
 
 	if (qvk.use_ray_query)
 	{
@@ -1497,7 +1623,7 @@ init_vulkan(void)
 
 	Com_Printf("-----------------------\n");
 
-	qvk.supports_colorspace = available_optional_instance_extensions[OPT_EXT_VK_EXT_SWAPCHAIN_COLOR_SPACE];
+	qvk.supports_colorspace = !headless && available_optional_instance_extensions[OPT_EXT_VK_EXT_SWAPCHAIN_COLOR_SPACE];
 
 	return true;
 }
@@ -1595,8 +1721,14 @@ VkResult
 destroy_swapchain(void)
 {
 	for(int i = 0; i < qvk.num_swap_chain_images; i++) {
-		vkDestroyImageView  (qvk.device, qvk.swap_chain_image_views[i], NULL);
-		qvk.swap_chain_image_views[i] = VK_NULL_HANDLE;
+		if (qvk.swap_chain_image_views)
+			vkDestroyImageView(qvk.device, qvk.swap_chain_image_views[i], NULL);
+
+		if (qvk.swap_chain_offscreen && qvk.swap_chain_images && qvk.swap_chain_images[i])
+			vkDestroyImage(qvk.device, qvk.swap_chain_images[i], NULL);
+
+		if (qvk.swap_chain_offscreen && qvk.swap_chain_image_memory && qvk.swap_chain_image_memory[i])
+			vkFreeMemory(qvk.device, qvk.swap_chain_image_memory[i], NULL);
 	}
 	free(qvk.swap_chain_image_views);
 	qvk.swap_chain_image_views = NULL;
@@ -1604,9 +1736,14 @@ destroy_swapchain(void)
 	free(qvk.swap_chain_images);
 	qvk.swap_chain_images = NULL;
 
-	qvk.num_swap_chain_images = 0;
+	free(qvk.swap_chain_image_memory);
+	qvk.swap_chain_image_memory = NULL;
 
-	vkDestroySwapchainKHR(qvk.device, qvk.swap_chain, NULL);
+	qvk.num_swap_chain_images = 0;
+	qvk.swap_chain_offscreen = false;
+
+	if (qvk.swap_chain)
+		vkDestroySwapchainKHR(qvk.device, qvk.swap_chain, NULL);
 	qvk.swap_chain = VK_NULL_HANDLE;
 
 	return VK_SUCCESS;
@@ -1618,7 +1755,8 @@ destroy_vulkan(void)
 	vkDeviceWaitIdle(qvk.device);
 
 	destroy_swapchain();
-	vkDestroySurfaceKHR(qvk.instance, qvk.surface,    NULL);
+	if (qvk.surface)
+		vkDestroySurfaceKHR(qvk.instance, qvk.surface, NULL);
 
 	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
 	{
@@ -1654,6 +1792,10 @@ destroy_vulkan(void)
 	free(qvk.layers);
 	qvk.layers = NULL;
 	qvk.num_layers = 0;
+
+	free(qvk.sdl2_extensions);
+	qvk.sdl2_extensions = NULL;
+	qvk.num_sdl2_extensions = 0;
 
 	// Clear the extension function pointers to make sure they don't refer non-requested extensions after vid_restart
 #define VK_EXTENSION_DO(a) q##a = NULL;
@@ -2960,7 +3102,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 void
 R_RenderFrame_RTX(refdef_t *fd)
 {
-	if (!qvk.swap_chain)
+	if (!qvk.swap_chain && !qvk.swap_chain_offscreen)
 		return;
 
 	vkpt_refdef.fd = fd;
@@ -3349,9 +3491,14 @@ recreate_swapchain(void)
 	vkDeviceWaitIdle(qvk.device);
 	vkpt_destroy_all(VKPT_INIT_SWAPCHAIN_RECREATE);
 	destroy_swapchain();
-	SDL_Vulkan_GetDrawableSize(qvk.window, &qvk.draw_width, &qvk.draw_height);
-	r_config.width = qvk.draw_width;
-	r_config.height = qvk.draw_height;
+	if (CL_BenchmarkHeadless()) {
+		qvk.draw_width = r_config.width;
+		qvk.draw_height = r_config.height;
+	} else {
+		SDL_Vulkan_GetDrawableSize(qvk.window, &qvk.draw_width, &qvk.draw_height);
+		r_config.width = qvk.draw_width;
+		r_config.height = qvk.draw_height;
+	}
 	create_swapchain();
 	vkpt_initialize_all(VKPT_INIT_SWAPCHAIN_RECREATE);
 
@@ -3492,15 +3639,19 @@ R_BeginFrame_RTX(void)
 	}
 
 	bool mode_changed = (qvk.draw_width != r_config.width) || (qvk.draw_height != r_config.height);
-	if (!qvk.swap_chain || mode_changed)
+	if ((!qvk.swap_chain && !qvk.swap_chain_offscreen) || mode_changed)
 	{
-		VkSurfaceCapabilitiesKHR surf_capabilities;
-		vkGetPhysicalDeviceSurfaceCapabilitiesKHR(qvk.physical_device, qvk.surface, &surf_capabilities);
-
-		// see if we're un-minimized again
-		if (surf_capabilities.currentExtent.width != 0 && surf_capabilities.currentExtent.height != 0)
-		{
+		if (CL_BenchmarkHeadless()) {
 			recreate_swapchain();
+		} else {
+			VkSurfaceCapabilitiesKHR surf_capabilities;
+			vkGetPhysicalDeviceSurfaceCapabilitiesKHR(qvk.physical_device, qvk.surface, &surf_capabilities);
+
+			// see if we're un-minimized again
+			if (surf_capabilities.currentExtent.width != 0 && surf_capabilities.currentExtent.height != 0)
+			{
+				recreate_swapchain();
+			}
 		}
 	}
 
@@ -3523,8 +3674,13 @@ R_BeginFrame_RTX(void)
 
 retry:;
 
-	if (!qvk.swap_chain) // we're minimized, don't render
+	if (!qvk.swap_chain && !qvk.swap_chain_offscreen) // we're minimized, don't render
 		return;
+
+	if (qvk.swap_chain_offscreen) {
+		qvk.current_swap_chain_image_index = qvk.frame_counter % qvk.num_swap_chain_images;
+		goto acquired;
+	}
 
 #ifdef VKPT_DEVICE_GROUPS
 	VkAcquireNextImageInfoKHR acquire_info = {
@@ -3548,6 +3704,8 @@ retry:;
 	else if(res_swapchain != VK_SUCCESS) {
 		Com_EPrintf("Error %d in vkAcquireNextImageKHR\n", res_swapchain);
 	}
+
+acquired:
 
 	if (qvk.wait_for_idle_frames) {
 		vkDeviceWaitIdle(qvk.device);
@@ -3583,7 +3741,7 @@ R_EndFrame_RTX(void)
 {
 	LOG_FUNC();
 
-	if (!qvk.swap_chain)
+	if (!qvk.swap_chain && !qvk.swap_chain_offscreen)
 	{
 		vkpt_draw_clear_stretch_pics();
 		return;
@@ -3628,6 +3786,7 @@ R_EndFrame_RTX(void)
 	VkSemaphore wait_semaphores[] = { qvk.semaphores[qvk.current_frame_index][0].image_available };
 	VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 	uint32_t wait_device_indices[] = { 0 };
+	int wait_semaphore_count = qvk.swap_chain_offscreen ? 0 : LENGTH(wait_semaphores);
 
 	VkSemaphore signal_semaphores[VKPT_MAX_GPUS];
 	uint32_t signal_device_indices[VKPT_MAX_GPUS];
@@ -3636,15 +3795,15 @@ R_EndFrame_RTX(void)
 		signal_semaphores[gpu] = qvk.semaphores[qvk.current_frame_index][gpu].render_finished;
 		signal_device_indices[gpu] = gpu;
 	}
+	int signal_semaphore_count = qvk.swap_chain_offscreen ? 0 : qvk.device_count;
 
 	vkpt_submit_command_buffer(
 		cmd_buf,
 		qvk.queue_graphics,
 		(1 << qvk.device_count) - 1,
-		LENGTH(wait_semaphores), wait_semaphores, wait_stages, wait_device_indices,
-		qvk.device_count, signal_semaphores, signal_device_indices,
+		wait_semaphore_count, wait_semaphore_count ? wait_semaphores : NULL, wait_semaphore_count ? wait_stages : NULL, wait_semaphore_count ? wait_device_indices : NULL,
+		signal_semaphore_count, signal_semaphore_count ? signal_semaphores : NULL, signal_semaphore_count ? signal_device_indices : NULL,
 		qvk.fences_frame_sync[qvk.current_frame_index]);
-
 
 #ifdef VKPT_IMAGE_DUMPS
 	if (cvar_dump_image->integer) {
@@ -3668,33 +3827,35 @@ R_EndFrame_RTX(void)
 	}
 #endif
 
-	VkPresentInfoKHR present_info = {
-		.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-		.waitSemaphoreCount = qvk.device_count,
-		.pWaitSemaphores    = signal_semaphores,
-		.swapchainCount     = 1,
-		.pSwapchains        = &qvk.swap_chain,
-		.pImageIndices      = &qvk.current_swap_chain_image_index,
-		.pResults           = NULL,
-	};
+	if (!qvk.swap_chain_offscreen) {
+		VkPresentInfoKHR present_info = {
+			.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+			.waitSemaphoreCount = qvk.device_count,
+			.pWaitSemaphores    = signal_semaphores,
+			.swapchainCount     = 1,
+			.pSwapchains        = &qvk.swap_chain,
+			.pImageIndices      = &qvk.current_swap_chain_image_index,
+			.pResults           = NULL,
+		};
 
 #ifdef VKPT_DEVICE_GROUPS
-	uint32_t present_device_mask = 1;
-	VkDeviceGroupPresentInfoKHR group_present_info = {
-		.sType				= VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_INFO_KHR,
-		.swapchainCount		= 1,
-		.pDeviceMasks		= &present_device_mask,
-		.mode				= VK_DEVICE_GROUP_PRESENT_MODE_LOCAL_BIT_KHR,
-	};
+		uint32_t present_device_mask = 1;
+		VkDeviceGroupPresentInfoKHR group_present_info = {
+			.sType				= VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_INFO_KHR,
+			.swapchainCount		= 1,
+			.pDeviceMasks		= &present_device_mask,
+			.mode				= VK_DEVICE_GROUP_PRESENT_MODE_LOCAL_BIT_KHR,
+		};
 
-	if (qvk.device_count > 1) {
-		present_info.pNext = &group_present_info;
-	}
+		if (qvk.device_count > 1) {
+			present_info.pNext = &group_present_info;
+		}
 #endif
 
-	VkResult res_present = vkQueuePresentKHR(qvk.queue_graphics, &present_info);
-	if(res_present == VK_ERROR_OUT_OF_DATE_KHR || res_present == VK_SUBOPTIMAL_KHR) {
-		recreate_swapchain();
+		VkResult res_present = vkQueuePresentKHR(qvk.queue_graphics, &present_info);
+		if(res_present == VK_ERROR_OUT_OF_DATE_KHR || res_present == VK_SUBOPTIMAL_KHR) {
+			recreate_swapchain();
+		}
 	}
 	qvk.frame_counter++;
 }
@@ -3750,19 +3911,68 @@ static void ray_tracing_api_g(genctx_t *ctx)
 	Prompt_AddMatch(ctx, "pipeline");
 }
 
+static void force_benchmark_quality_settings(void)
+{
+	if (!CL_BenchmarkHeadless())
+		return;
+
+	Cvar_SetByVar(cvar_drs_enable, "0", FROM_CODE);
+	Cvar_SetByVar(scr_viewsize, "100", FROM_CODE);
+	Cvar_Set("flt_fsr_enable", "0");
+
+	Cvar_SetByVar(cvar_flt_enable, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_flt_taa, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_flt_atrous_hf, "4", FROM_CODE);
+	Cvar_SetByVar(cvar_flt_atrous_lf, "4", FROM_CODE);
+	Cvar_SetByVar(cvar_flt_atrous_spec, "4", FROM_CODE);
+	Cvar_SetByVar(cvar_flt_temporal_hf, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_flt_temporal_lf, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_flt_temporal_spec, "1", FROM_CODE);
+
+	Cvar_SetByVar(cvar_pt_num_bounce_rays, "2", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_reflect_refract, "10", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_direct_polygon_lights, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_direct_dyn_lights, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_direct_sun_light, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_indirect_polygon_lights, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_indirect_dyn_lights, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_light_stats, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_specular_mis, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_thick_glass, "2", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_dof, "3", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_show_sky, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_cameras, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_projection, "0", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_bsp_sky_lights, "2", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_enable_nodraw, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_enable_surface_lights, "2", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_enable_surface_lights_warp, "2", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_waterwarp, "1", FROM_CODE);
+	Cvar_SetByVar(cvar_pt_caustics, "1", FROM_CODE);
+}
+
 /* called when the library is loaded */
 ref_type_t
 R_Init_RTX(bool total)
 {
 	registration_sequence = 1;
 
-	if (!vid.init(GAPI_VULKAN)) {
-		Com_Error(ERR_FATAL, "VID_Init failed\n");
-		return REF_TYPE_NONE;
-	}
+	if (CL_BenchmarkHeadless()) {
+		int width = CL_BenchmarkWidth();
+		int height = CL_BenchmarkHeight();
 
-    extern SDL_Window *get_sdl_window(void);
-    qvk.window = get_sdl_window();
+		R_ModeChanged_RTX(width, height, 0);
+		qvk.window = NULL;
+		Com_Printf("Using Vulkan offscreen benchmark mode at %dx%d.\n", width, height);
+	} else {
+		if (!vid.init(GAPI_VULKAN)) {
+			Com_Error(ERR_FATAL, "VID_Init failed\n");
+			return REF_TYPE_NONE;
+		}
+
+		extern SDL_Window *get_sdl_window(void);
+		qvk.window = get_sdl_window();
+	}
 
 	cvar_profiler = Cvar_Get("profiler", "0", 0);
 	cvar_profiler_samples = Cvar_Get("profiler_samples", "60", CVAR_ARCHIVE);
@@ -3838,7 +4048,7 @@ R_Init_RTX(bool total)
 	cvar_pt_waterwarp = Cvar_Get("pt_waterwarp", "0", CVAR_ARCHIVE);
 
 #ifdef VKPT_DEVICE_GROUPS
-	cvar_sli = Cvar_Get("sli", "1", CVAR_REFRESH | CVAR_ARCHIVE);
+	cvar_sli = Cvar_Get("sli", CL_BenchmarkHeadless() ? "0" : "1", CVAR_REFRESH | CVAR_ARCHIVE);
 #endif
 
 #ifdef VKPT_IMAGE_DUMPS
@@ -3853,6 +4063,10 @@ R_Init_RTX(bool total)
 
 	drs_init();
 	vkpt_fsr_init_cvars();
+	if (CL_BenchmarkHeadless()) {
+		Cvar_SetByVar(cvar_drs_enable, "0", FROM_CODE);
+		Cvar_SetByVar(scr_viewsize, "100", FROM_CODE);
+	}
 
 	// Minimum NVIDIA driver version - this is a cvar in case something changes in the future,
 	// and the current test no longer works.
@@ -3900,6 +4114,8 @@ R_Init_RTX(bool total)
 	cvar_pt_num_bounce_rays->flags |= CVAR_ARCHIVE;
 
 	cvar_ui_hdr_nits = Cvar_Get("ui_hdr_nits", "300", 0);
+
+	force_benchmark_quality_settings();
 
 	qvk.draw_width  = r_config.width;
 	qvk.draw_height = r_config.height;
@@ -3981,7 +4197,9 @@ R_Shutdown_RTX(bool total)
 
 	IMG_Shutdown();
 	MOD_Shutdown(); // todo: currently leaks memory, need to clear submeshes
-	vid.shutdown();
+	if (!CL_BenchmarkHeadless()) {
+		vid.shutdown();
+	}
 }
 
 // for screenshots
@@ -4012,7 +4230,7 @@ IMG_ReadPixels_RTX(screenshot_t *s)
 		.subresourceRange = subresource_range,
 		.srcAccessMask = 0,
 		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-		.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		.oldLayout = qvk.swap_chain_image_layout,
 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
 	);
 
@@ -4044,7 +4262,7 @@ IMG_ReadPixels_RTX(screenshot_t *s)
 		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
 		.dstAccessMask = 0,
 		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+		.newLayout = qvk.swap_chain_image_layout
 	);
 
 	IMAGE_BARRIER_STAGES(cmd_buf,
@@ -4140,7 +4358,7 @@ IMG_ReadPixelsHDR_RTX(screenshot_t *s)
 		.subresourceRange = subresource_range,
 		.srcAccessMask = 0,
 		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-		.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		.oldLayout = qvk.swap_chain_image_layout,
 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
 	);
 
@@ -4170,7 +4388,7 @@ IMG_ReadPixelsHDR_RTX(screenshot_t *s)
 		.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
 		.dstAccessMask = 0,
 		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+		.newLayout = qvk.swap_chain_image_layout
 	);
 
 	IMAGE_BARRIER(cmd_buf,
@@ -4577,6 +4795,12 @@ static bool R_IsHDR_RTX(void)
 	return qvk.surf_is_hdr;
 }
 
+static void R_BenchmarkWaitIdle_RTX(void)
+{
+	if (qvk.device)
+		vkDeviceWaitIdle(qvk.device);
+}
+
 void R_RegisterFunctionsRTX()
 {
 	R_Init = R_Init_RTX;
@@ -4599,6 +4823,7 @@ void R_RegisterFunctionsRTX()
 	R_DrawStretchRaw = R_DrawStretchRaw_RTX;
 	R_UpdateRawPic = R_UpdateRawPic_RTX;
 	R_DiscardRawPic = R_DiscardRawPic_RTX;
+	R_BenchmarkWaitIdle = R_BenchmarkWaitIdle_RTX;
 	R_SupportsDebugLines = vkpt_debugdraw_supported;
 	R_AddDebugText_ = vkpt_debugdraw_addtext;
 	R_DrawKeepAspectPic = R_DrawKeepAspectPic_RTX;

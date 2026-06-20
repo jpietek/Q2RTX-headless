@@ -532,6 +532,10 @@ void Com_Error(error_type_t code, const char *fmt, ...)
     // reset Com_Printf recursion level
     com_printEntered = 0;
 
+#if USE_CLIENT
+    CL_BenchmarkFatal(code, com_errorMsg);
+#endif
+
     if (code == ERR_DISCONNECT || code == ERR_RECONNECT) {
         Com_WPrintf("%s\n", com_errorMsg);
         SV_Shutdown(va("Server was killed: %s\n", com_errorMsg), code);
@@ -776,6 +780,19 @@ static void Com_AddEarlyCommands(bool clear)
             continue;
         }
         if (strcmp(s, "+set")) {
+            if (strcmp(s, "+bench") && strncmp(s, "+bench_", 7)) {
+                continue;
+            }
+            if (i + 1 >= com_argc) {
+                Com_Printf("Usage: %s <value>\n", s);
+                com_argc = i;
+                break;
+            }
+            Cvar_SetEx(s + 1, com_argv[i + 1], FROM_CMDLINE);
+            if (clear) {
+                com_argv[i] = com_argv[i + 1] = NULL;
+            }
+            i++;
             continue;
         }
         if (i + 2 >= com_argc) {
@@ -992,6 +1009,12 @@ void Qcommon_Init(int argc, char **argv)
 
     // add + commands from command line
     if (!Com_AddLateCommands()) {
+#if USE_CLIENT
+        if (Cvar_VariableInteger("bench")) {
+            goto skip_default_action;
+        }
+#endif
+
         // if the user didn't give any commands, run default action
         const char *cmd = COM_DEDICATED ? "dedicated_start" : "client_start";
 
@@ -1005,6 +1028,10 @@ void Qcommon_Init(int argc, char **argv)
         SCR_EndLoadingPlaque();
     }
 
+#if USE_CLIENT
+skip_default_action:
+#endif
+
     // even not given a starting map, dedicated server starts
     // listening for rcon commands (create socket after all configs
     // are executed to make sure port number is properly set)
@@ -1015,6 +1042,10 @@ void Qcommon_Init(int argc, char **argv)
     Com_AddConfigFile(COM_POSTINIT_CFG, FS_TYPE_REAL);
 
     Com_Printf("====== " PRODUCT " initialized ======\n\n");
+
+#if USE_CLIENT
+    CL_BenchmarkMaybeStart();
+#endif
 
 	if (fs_shareware->integer)
 	{
@@ -1143,4 +1174,3 @@ void Qcommon_Frame(void)
     }
 #endif
 }
-

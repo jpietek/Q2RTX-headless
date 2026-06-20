@@ -1,0 +1,95 @@
+name: PenguinBurner Benchmark Release
+
+on:
+  push:
+    tags:
+      - 'pb-benchmark-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example pb-benchmark-v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="$GITHUB_REF_NAME"
+          fi
+          case "$version" in
+            pb-benchmark-v*) ;;
+            *)
+              echo "version must start with pb-benchmark-v" >&2
+              exit 1
+              ;;
+          esac
+          echo "PB_BENCHMARK_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build portable release artifact
+        shell: bash
+        env:
+          PB_BENCHMARK_CONTAINER_ENGINE: docker
+        run: scripts/build-pb-benchmark-release.sh
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: q2rtx-penguinburner-${{ env.PB_BENCHMARK_VERSION }}-linux-x86_64
+          path: |
+            dist/pb-benchmark/q2rtx-penguinburner-${{ env.PB_BENCHMARK_VERSION }}-linux-x86_64.tar.gz
+            dist/pb-benchmark/q2rtx-penguinburner-${{ env.PB_BENCHMARK_VERSION }}-linux-x86_64.tar.gz.sha256
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes_file="$(mktemp)"
+          cat > "$notes_file" <<EOF
+# Q2RTX PenguinBurner benchmark $PB_BENCHMARK_VERSION
+
+Linux x86_64 benchmark artifact for PenguinBurner.
+
+- Headless by default with +bench 1.
+- Offscreen Vulkan rendering; no gamescope, X11, or Wayland window required.
+- No curl, OpenSSL, or crypto runtime stack.
+- Q2RTX reports FPS and frame timing only; PenguinBurner measures watts, utilization, and VRAM externally.
+- Default 4K native/max-RT benchmark profile; 1440p override is supported.
+
+Artifact does not include id Software pak files or Q2RTX media pkz assets.
+PenguinBurner must stage or provide the required local data.
+
+Expected dynamic runtime dependencies: libvulkan, libc, libm, libdl/libpthread on older glibc systems.
+EOF
+
+          assets=(
+            "dist/pb-benchmark/q2rtx-penguinburner-${PB_BENCHMARK_VERSION}-linux-x86_64.tar.gz"
+            "dist/pb-benchmark/q2rtx-penguinburner-${PB_BENCHMARK_VERSION}-linux-x86_64.tar.gz.sha256"
+          )
+
+          if gh release view "$PB_BENCHMARK_VERSION" >/dev/null 2>&1; then
+            gh release upload "$PB_BENCHMARK_VERSION" "${assets[@]}" --clobber
+          else
+            gh release create "$PB_BENCHMARK_VERSION" "${assets[@]}" \
+              --title "Q2RTX PenguinBurner benchmark $PB_BENCHMARK_VERSION" \
+              --notes-file "$notes_file"
+          fi

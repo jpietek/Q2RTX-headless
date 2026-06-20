@@ -87,6 +87,7 @@ SET(HEADERS_GAME
 
 SET(SRC_CLIENT
 	client/ascii.c
+	client/benchmark.c
 	client/console.c
 	client/cin.c
 	client/crc.c
@@ -579,6 +580,33 @@ IF(UNIX)
     TARGET_LINK_LIBRARIES(server dl rt m pthread)
     IF(TARGET client)
         TARGET_LINK_LIBRARIES(client m)
+        IF(CONFIG_PB_BENCHMARK AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            TARGET_LINK_OPTIONS(client PRIVATE "-static-libgcc")
+        ENDIF()
+        IF(CONFIG_PB_BENCHMARK AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            EXECUTE_PROCESS(
+                COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.a
+                OUTPUT_VARIABLE PB_STATIC_LIBSTDCXX
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            IF(EXISTS "${PB_STATIC_LIBSTDCXX}")
+                TARGET_LINK_OPTIONS(client PRIVATE "-static-libstdc++")
+            ELSE()
+                MESSAGE(WARNING "Static libstdc++ not found; benchmark binary will keep a dynamic libstdc++ dependency")
+            ENDIF()
+        ENDIF()
+        IF(CONFIG_PB_BENCHMARK AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            EXECUTE_PROCESS(
+                COMMAND ${CMAKE_C_COMPILER} -print-file-name=libatomic.a
+                OUTPUT_VARIABLE PB_STATIC_LIBATOMIC
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            IF(EXISTS "${PB_STATIC_LIBATOMIC}")
+                TARGET_LINK_LIBRARIES(client "-Wl,-Bstatic" atomic "-Wl,-Bdynamic")
+            ELSE()
+                MESSAGE(WARNING "Static libatomic not found; benchmark binary will keep a dynamic libatomic dependency")
+            ENDIF()
+        ENDIF()
     ENDIF()
 ENDIF()
 

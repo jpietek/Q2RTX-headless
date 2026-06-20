@@ -343,6 +343,7 @@ extern void (*R_AddDebugText_)(const vec3_t origin, const vec3_t angles, const c
 // video mode and refresh state management entry points
 extern void    (*R_BeginFrame)(void);
 extern void    (*R_EndFrame)(void);
+extern void    (*R_BenchmarkWaitIdle)(void);
 extern void    (*R_ModeChanged)(int width, int height, int flags);
 
 // add decal to ring buffer

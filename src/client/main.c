@@ -3445,11 +3445,20 @@ void CL_Init(void)
     // start with full screen console
     cls.key_dest = KEY_CONSOLE;
 
+    CL_BenchmarkInit();
     CL_InitRefresh();
-    S_Init();   // sound must be initialized after window is created
+    if (!CL_BenchmarkHeadless()) {
+        S_Init();   // sound must be initialized after window is created
+    } else {
+        Com_Printf("Benchmark headless mode: sound disabled.\n");
+    }
 
     CL_InitLocal();
-    IN_Init();
+    if (!CL_BenchmarkHeadless()) {
+        IN_Init();
+    } else {
+        Com_Printf("Benchmark headless mode: input disabled.\n");
+    }
 
 #if USE_ZLIB
     Q_assert(inflateInit2(&cls.z, -MAX_WBITS) == Z_OK);
@@ -3518,4 +3527,3 @@ void CL_Shutdown(void)
 
     isdown = false;
 }
-

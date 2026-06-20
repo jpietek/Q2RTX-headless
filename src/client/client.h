@@ -972,6 +972,23 @@ void CL_FirstDemoFrame(void);
 void CL_Stop_f(void);
 demoInfo_t *CL_GetDemoInfo(const char *path, demoInfo_t *info);
 
+//
+// benchmark.c
+//
+void CL_BenchmarkInit(void);
+void CL_BenchmarkMaybeStart(void);
+bool CL_BenchmarkActive(void);
+bool CL_BenchmarkFinished(void);
+bool CL_BenchmarkHeadless(void);
+bool CL_BenchmarkHoldAfterDemo(void);
+int CL_BenchmarkWidth(void);
+int CL_BenchmarkHeight(void);
+void CL_BenchmarkDemoFirstFrame(void);
+void CL_BenchmarkDemoDone(unsigned frames, unsigned loop_ms);
+void CL_BenchmarkDemoHoldStart(void);
+void CL_BenchmarkFrameRendered(void);
+void CL_BenchmarkFatal(error_type_t code, const char *message);
+
 
 //
 // locs.c
