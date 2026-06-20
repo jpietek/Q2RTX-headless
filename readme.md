@@ -67,7 +67,7 @@ Portable release artifact, using the same `manylinux_2_28` x86_64 baseline as
 PenguinBurner's native overlay wheel:
 
 ```bash
-PB_BENCHMARK_VERSION=pb-benchmark-v0.1.0 \
+PB_BENCHMARK_VERSION=pb-benchmark-v0.1.1 \
   scripts/build-pb-benchmark-release.sh
 ```
 

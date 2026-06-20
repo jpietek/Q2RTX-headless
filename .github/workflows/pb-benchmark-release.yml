@@ -70,6 +70,8 @@ jobs:
 
           - Headless by default with +bench 1.
           - Offscreen Vulkan rendering; no gamescope, X11, or Wayland window required.
+          - Sound and Ogg music initialization are disabled for the benchmark build.
+          - Gameplay death spam is suppressed in benchmark logs.
           - No curl, OpenSSL, or crypto runtime stack.
           - Q2RTX reports FPS and frame timing only; PenguinBurner measures watts, utilization, and VRAM externally.
           - Default 4K native/max-RT benchmark profile; 1440p override is supported.

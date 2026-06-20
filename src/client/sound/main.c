@@ -136,6 +136,12 @@ S_Init
 */
 void S_Init(void)
 {
+#if defined(CONFIG_PB_BENCHMARK)
+    s_enable = Cvar_Get("s_enable", "0", CVAR_SOUND);
+    Cvar_SetInteger(s_enable, SS_NOT, FROM_CODE);
+    return;
+#endif
+
     s_enable = Cvar_Get("s_enable", "2", CVAR_SOUND);
     if (s_enable->integer <= SS_NOT) {
         Com_Printf("Sound initialization disabled.\n");

@@ -479,7 +479,6 @@ OGG_LoadTrackList(void)
 	}
 
 	// if tracks have been found above, we would've returned there
-	Com_Printf("No Ogg Vorbis music tracks have been found, so there will be no music.\n");
 }
 
 // ----
@@ -767,6 +766,19 @@ static const cmdreg_t c_ogg[] = {
 void
 OGG_Init(void)
 {
+#if defined(CONFIG_PB_BENCHMARK)
+	ogg_enable = Cvar_Get("ogg_enable", "0", CVAR_ARCHIVE);
+	Cvar_SetInteger(ogg_enable, 0, FROM_CODE);
+	ogg_volume = Cvar_Get("ogg_volume", "1.0", CVAR_ARCHIVE);
+	ogg_shuffle = Cvar_Get("ogg_shuffle", "0", CVAR_ARCHIVE);
+	ogg_ignoretrack0 = Cvar_Get("ogg_ignoretrack0", "0", CVAR_ARCHIVE);
+
+	trackindex = -1;
+	ogg_numsamples = 0;
+	ogg_status = STOP;
+	return;
+#endif
+
 	// Cvars
 	ogg_enable = Cvar_Get("ogg_enable", "1", CVAR_ARCHIVE);
 	ogg_enable->changed = ogg_enable_changed;

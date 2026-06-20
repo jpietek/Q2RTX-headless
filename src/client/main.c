@@ -3449,8 +3449,6 @@ void CL_Init(void)
     CL_InitRefresh();
     if (!CL_BenchmarkHeadless()) {
         S_Init();   // sound must be initialized after window is created
-    } else {
-        Com_Printf("Benchmark headless mode: sound disabled.\n");
     }
 
     CL_InitLocal();
@@ -3464,7 +3462,9 @@ void CL_Init(void)
     Q_assert(inflateInit2(&cls.z, -MAX_WBITS) == Z_OK);
 #endif
 
-    OGG_Init();
+    if (!CL_BenchmarkHeadless()) {
+        OGG_Init();
+    }
     CL_LoadDownloadIgnores();
     CL_LoadStuffTextWhiteList();
 
