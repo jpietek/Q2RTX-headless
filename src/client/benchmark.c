@@ -35,6 +35,7 @@ static cvar_t *bench_width;
 static cvar_t *bench_height;
 static cvar_t *bench_event_fd;
 static cvar_t *bench_event_stdout;
+static cvar_t *bench_frame_event_ms;
 
 typedef struct {
     bool        active;
@@ -51,6 +52,7 @@ typedef struct {
     unsigned    total_frames;
     unsigned    render_start_ms;
     unsigned    last_render_ms;
+    unsigned    last_frame_event_ms;
     unsigned    render_elapsed_ms;
     unsigned    render_frames;
     unsigned    frame_samples;
@@ -314,6 +316,10 @@ void CL_BenchmarkInit(void)
     bench_height = Cvar_Get("bench_height", "2160", CVAR_NOARCHIVE);
     bench_event_fd = Cvar_Get("bench_event_fd", "-1", CVAR_NOARCHIVE);
     bench_event_stdout = Cvar_Get("bench_event_stdout", "0", CVAR_NOARCHIVE);
+    // Minimum spacing between per-frame progress heartbeats. Time-throttled
+    // (not frame-count throttled) so the host watchdog sees a steady pulse even
+    // when frame rate collapses; only a real GPU hang stops the pulse.
+    bench_frame_event_ms = Cvar_Get("bench_frame_event_ms", "250", CVAR_NOARCHIVE);
 }
 
 bool CL_BenchmarkActive(void)
@@ -522,6 +528,18 @@ void CL_BenchmarkFrameRendered(void)
         pb_benchmark.sample_fps_sum += fps;
     }
     pb_benchmark.last_render_ms = now;
+
+    // Emit a throttled progress heartbeat. The host arms a hang watchdog on the
+    // first of these and trips only if the frame index stops advancing, so a
+    // frozen GPU is caught in seconds instead of waiting out the pass timeout.
+    if (!pb_benchmark.last_frame_event_ms ||
+        elapsed_since(pb_benchmark.last_frame_event_ms, now) >=
+            (unsigned)max(bench_frame_event_ms->integer, 0)) {
+        pb_benchmark.last_frame_event_ms = now;
+        emit_event("frame", "\"n\":%u,\"ms\":%.2f",
+                   pb_benchmark.render_frames,
+                   delta ? (float)delta : 0.0f);
+    }
 
     if (loops_started() >= bench_min_loops->integer &&
         pb_benchmark.render_elapsed_ms >= pb_benchmark.target_ms) {
