@@ -266,6 +266,7 @@ SET(SRC_VKPT
 	refresh/vkpt/freecam.c
 	refresh/vkpt/fsr.c
 	refresh/vkpt/main.c
+	refresh/vkpt/device_selection.c
 	refresh/vkpt/material.c
 	refresh/vkpt/matrix.c
 	refresh/vkpt/mgpu.c
@@ -288,6 +289,7 @@ SET(SRC_VKPT
 )
 
 SET(HEADERS_VKPT
+	refresh/vkpt/device_selection.h
 	refresh/vkpt/vkpt.h
 	refresh/vkpt/vk_util.h
 	refresh/vkpt/buddy_allocator.h

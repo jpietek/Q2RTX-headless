@@ -90,6 +90,33 @@ Verify the dependency goal:
 readelf -d ./q2rtx | grep -Ei 'curl|ssl|crypto|idn|psl|SDL|openal|X11|wayland' && exit 1 || echo clean
 ```
 
+## Selecting a GPU
+
+PenguinBurner passes the selected NVIDIA GPU's UUID through `Q2RTX_TARGET_UUID`.
+This pins the workload to that physical device even when several identical cards
+have the same PCI device ID or Vulkan enumerates them in a different order from
+NVML. Vulkan device indices must not be treated as `nvidia-smi` indices.
+
+For a standalone run, set `Q2RTX_TARGET_UUID` to the GPU's UUID from
+`nvidia-smi --query-gpu=uuid --format=csv,noheader`. Both `GPU-` prefixed, dashed
+UUIDs and compact 32-digit hexadecimal UUIDs are accepted, in either case.
+
+With a target set, ray-tracing API selection considers only that device and SLI
+device groups are disabled for the run. An invalid UUID, an unavailable GPU, or
+a GPU without a supported ray-tracing API stops initialization with an error;
+the benchmark never silently loads another card. With the variable unset or
+empty, the existing automatic device and ray-tracing API selection is preserved.
+
+The selection regression tests require only a C compiler, CMake and the Vulkan
+headers submodule; they do not require a GPU:
+
+```bash
+git submodule update --init extern/Vulkan-Headers
+cmake -S tests -B build-device-tests
+cmake --build build-device-tests --config Release
+ctest --test-dir build-device-tests -C Release --output-on-failure
+```
+
 ## Run Manually
 
 Headless 60 second 4K benchmark:

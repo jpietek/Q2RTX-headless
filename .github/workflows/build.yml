@@ -10,6 +10,22 @@ env:
   BUILD_TYPE: Release
 
 jobs:
+  device-selection-tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Fetch Vulkan headers
+      run: git submodule update --init extern/Vulkan-Headers
+    - name: Configure selection tests
+      run: cmake -S tests -B build-device-tests
+    - name: Build selection tests
+      run: cmake --build build-device-tests --config Release
+    - name: Test UUID selection and API compatibility
+      run: ctest --test-dir build-device-tests -C Release --output-on-failure
+
   build-windows:
     runs-on: windows-latest
 

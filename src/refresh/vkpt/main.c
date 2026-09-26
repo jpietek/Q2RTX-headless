@@ -32,6 +32,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "refresh/models.h"
 #include "system/hunk.h"
 #include "vkpt.h"
+#include "device_selection.h"
 #include "material.h"
 #include "fog.h"
 #include "cameras.h"
@@ -1112,7 +1113,7 @@ init_vulkan(void)
 		}
 	}
 
-	/* pick physical device (iterate over all but pick device 0 anyways) */
+	/* Enumerate physical devices and select by capabilities and optional UUID. */
 	uint32_t num_devices = 0;
 	_VK(vkEnumeratePhysicalDevices(qvk.instance, &num_devices, NULL));
 	if(num_devices == 0)
@@ -1120,10 +1121,88 @@ init_vulkan(void)
 	VkPhysicalDevice *devices = alloca(sizeof(VkPhysicalDevice) *num_devices);
 	_VK(vkEnumeratePhysicalDevices(qvk.instance, &num_devices, devices));
 
+	const char *target_uuid = getenv("Q2RTX_TARGET_UUID");
+	bool targeted = target_uuid && *target_uuid;
+	vkpt_device_candidate_t *candidates = alloca(sizeof(*candidates) * num_devices);
+	memset(candidates, 0, sizeof(*candidates) * num_devices);
+
+	for(int i = 0; i < num_devices; i++) 
+	{
+		VkPhysicalDeviceIDProperties id_properties = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES,
+		};
+		VkPhysicalDeviceDriverProperties driver_properties = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+			.pNext = &id_properties
+		};
+
+		VkPhysicalDeviceProperties2 dev_properties2 = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+			.pNext = &driver_properties
+		};
+		vkGetPhysicalDeviceProperties2(devices[i], &dev_properties2);
+
+		memcpy(candidates[i].uuid, id_properties.deviceUUID, VK_UUID_SIZE);
+		candidates[i].driver = driver_properties.driverID;
+
+		VkPhysicalDeviceFeatures dev_features;
+		vkGetPhysicalDeviceFeatures(devices[i], &dev_features);
+
+		Com_Printf("Physical device %d: %s\n", i, dev_properties2.properties.deviceName);
+
+		uint32_t num_ext;
+		vkEnumerateDeviceExtensionProperties(devices[i], NULL, &num_ext, NULL);
+
+		VkExtensionProperties *ext_properties = alloca(sizeof(VkExtensionProperties) * num_ext);
+		vkEnumerateDeviceExtensionProperties(devices[i], NULL, &num_ext, ext_properties);
+
+		Com_Printf("Supported Vulkan device extensions:\n");
+		for(int j = 0; j < num_ext; j++) 
+		{
+			Com_Printf("  %s\n", ext_properties[j].extensionName);
+
+			if(!strcmp(ext_properties[j].extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)) 
+			{
+				candidates[i].ray_pipeline = true;
+			}
+
+			if (!strcmp(ext_properties[j].extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME))
+			{
+				candidates[i].ray_query = true;
+			}
+		}
+	}
+
+	vkpt_rt_api_t requested_api = VKPT_RT_AUTO;
+	if (!Q_strcasecmp(cvar_ray_tracing_api->string, "query"))
+		requested_api = VKPT_RT_QUERY;
+	else if (!Q_strcasecmp(cvar_ray_tracing_api->string, "pipeline"))
+		requested_api = VKPT_RT_PIPELINE;
+
+	int picked_device = vkpt_select_device(candidates, num_devices, target_uuid,
+		requested_api, &qvk.use_ray_query);
+	if (picked_device < 0) {
+		if (picked_device == VKPT_DEVICE_INVALID_UUID)
+			Com_Error(ERR_FATAL, "Q2RTX_TARGET_UUID is not a valid GPU UUID: %s", target_uuid);
+		else if (picked_device == VKPT_DEVICE_UUID_NOT_FOUND)
+			Com_Error(ERR_FATAL, "Q2RTX_TARGET_UUID %s matched no enumerated device.", target_uuid);
+		else if (targeted)
+			Com_Error(ERR_FATAL, "Q2RTX_TARGET_UUID %s does not support a ray tracing API.", target_uuid);
+		else
+			Com_Error(ERR_FATAL, "No ray tracing capable GPU found.");
+		return false;
+	}
+	if (Q_strcasecmp(cvar_ray_tracing_api->string, "auto") &&
+		Q_strcasecmp(cvar_ray_tracing_api->string, qvk.use_ray_query ? "query" : "pipeline"))
+		Com_WPrintf("Requested Ray Tracing API (%s) is not available, switching to automatic selection.\n",
+			cvar_ray_tracing_api->string);
+	if (targeted)
+		Com_Printf("Q2RTX_TARGET_UUID %s pinned physical device %d\n", target_uuid, picked_device);
+
 #ifdef VKPT_DEVICE_GROUPS
 	uint32_t num_device_groups = 0;
 
-	if (cvar_sli->integer)
+	if (cvar_sli->integer && !targeted)
 		_VK(vkEnumeratePhysicalDeviceGroups(qvk.instance, &num_device_groups, NULL));
 
 	VkDeviceGroupDeviceCreateInfo device_group_create_info;
@@ -1157,7 +1236,9 @@ init_vulkan(void)
 	else
 	{
 		qvk.device_count = 1;
-		if (!cvar_sli->integer)
+		if (targeted)
+			Com_Printf("SLI: disabled for Q2RTX_TARGET_UUID; using only the selected device.\n");
+		else if (!cvar_sli->integer)
 			Com_Printf("SLI: multi-GPU support disabled through the 'sli' console variable.\n");
 		else
 			Com_Printf("SLI: no device groups found, using a single device.\n");
@@ -1165,103 +1246,6 @@ init_vulkan(void)
 #else
 	qvk.device_count = 1;
 #endif
-
-	int picked_device_with_ray_pipeline = -1;
-	int picked_device_with_ray_query = -1;
-	VkDriverId picked_driver_ray_query = VK_DRIVER_ID_MAX_ENUM;
-	qvk.use_ray_query = false;
-
-	for(int i = 0; i < num_devices; i++) 
-	{
-		VkPhysicalDeviceDriverProperties driver_properties = {
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
-			.pNext = NULL
-		};
-
-		VkPhysicalDeviceProperties2 dev_properties2 = {
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-			.pNext = &driver_properties
-		};
-		vkGetPhysicalDeviceProperties2(devices[i], &dev_properties2);
-
-		VkPhysicalDeviceFeatures dev_features;
-		vkGetPhysicalDeviceFeatures(devices[i], &dev_features);
-
-		Com_Printf("Physical device %d: %s\n", i, dev_properties2.properties.deviceName);
-
-		uint32_t num_ext;
-		vkEnumerateDeviceExtensionProperties(devices[i], NULL, &num_ext, NULL);
-
-		VkExtensionProperties *ext_properties = alloca(sizeof(VkExtensionProperties) * num_ext);
-		vkEnumerateDeviceExtensionProperties(devices[i], NULL, &num_ext, ext_properties);
-
-		Com_Printf("Supported Vulkan device extensions:\n");
-		for(int j = 0; j < num_ext; j++) 
-		{
-			Com_Printf("  %s\n", ext_properties[j].extensionName);
-
-			if(!strcmp(ext_properties[j].extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)) 
-			{
-				if (picked_device_with_ray_pipeline < 0)
-				{
-					picked_device_with_ray_pipeline = i;
-				}
-			}
-
-			if (!strcmp(ext_properties[j].extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME))
-			{
-				if (picked_device_with_ray_query < 0)
-				{
-					picked_device_with_ray_query = i;
-					picked_driver_ray_query = driver_properties.driverID;
-				}
-			}
-		}
-	}
-
-	int picked_device = -1;
-
-	if (!Q_strcasecmp(cvar_ray_tracing_api->string, "query") && picked_device_with_ray_query >= 0)
-	{
-		qvk.use_ray_query = true;
-		picked_device = picked_device_with_ray_query;
-	}
-	else if (!Q_strcasecmp(cvar_ray_tracing_api->string, "pipeline") && picked_device_with_ray_pipeline >= 0)
-	{
-		qvk.use_ray_query = false;
-		picked_device = picked_device_with_ray_pipeline;
-	}
-	
-	if (picked_device < 0)
-	{
-		if (Q_strcasecmp(cvar_ray_tracing_api->string, "auto"))
-		{
-			Com_WPrintf("Requested Ray Tracing API (%s) is not available, switching to automatic selection.\n", cvar_ray_tracing_api->string);
-		}
-
-		if (picked_driver_ray_query == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
-		{
-			// Prefer KHR_ray_query on NVIDIA drivers, if available.
-			qvk.use_ray_query = true;
-			picked_device = picked_device_with_ray_query;
-		}
-		else if (picked_device_with_ray_pipeline >= 0)
-		{
-			// Prefer KHR_ray_tracing_pipeline otherwise
-			qvk.use_ray_query = false;
-			picked_device = picked_device_with_ray_pipeline;
-		}
-		else if (picked_device_with_ray_query >= 0)
-		{
-			qvk.use_ray_query = true;
-			picked_device = picked_device_with_ray_query;
-		}
-	}
-
-	if (picked_device < 0)
-	{
-		Com_Error(ERR_FATAL, "No ray tracing capable GPU found.");
-	}
 
 	qvk.physical_device = devices[picked_device];
 
